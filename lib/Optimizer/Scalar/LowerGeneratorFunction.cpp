@@ -974,15 +974,26 @@ void LowerToStateMachine::moveCrossingValuesToOuter() {
   }
 }
 
-/// \return true if an entry BasicBlock in \p PI is not a predecessor of
-/// the BasicBlock \p PI resides in.
+/// \return true if a PhiInst should be moved to the outer scope.
+/// This is the case when:
+/// 1. An entry BasicBlock is not a predecessor of the PhiInst's block, OR
+/// 2. An entry's value is defined in a block that does not dominate the
+///    entry's incoming BasicBlock (can happen after the switch transformation
+///    changes the CFG's dominance structure).
 static bool shouldMovePhiInst(
     PhiInst *PI,
-    const llvh::DenseSet<BasicBlock *> &predBBs) {
+    const llvh::DenseSet<BasicBlock *> &predBBs,
+    DominanceInfo &D) {
   for (size_t i = 0, e = PI->getNumEntries(); i < e; ++i) {
-    auto [_, valBB] = PI->getEntry(i);
+    auto [val, valBB] = PI->getEntry(i);
     if (!predBBs.count(valBB)) {
       return true;
+    }
+    // Check that the value's defining block dominates the incoming block.
+    if (auto *inst = llvh::dyn_cast<Instruction>(val)) {
+      if (!D.properlyDominates(inst->getParent(), valBB)) {
+        return true;
+      }
     }
   }
   return false;
@@ -995,7 +1006,7 @@ void LowerToStateMachine::moveInnerPhisToOuter(DominanceInfo &D) {
     predBBs.insert(pred_begin(&BB), pred_end(&BB));
     for (Instruction &I : BB) {
       if (auto *PI = llvh::dyn_cast<PhiInst>(&I)) {
-        if (!shouldMovePhiInst(PI, predBBs))
+        if (!shouldMovePhiInst(PI, predBBs, D))
           continue;
         auto outerVar = builder_.createVariable(
             getParentOuterScope_->getVariableScope(),
